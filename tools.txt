@@ -1,0 +1,311 @@
+import pandas as pd
+import numpy as np
+import datetime
+
+def pre_process(all_paths=None, save=None, source=None, num_cols=None, specific_break=None, quantiles=None, days_before=0):
+    if all_paths is None:
+        all_paths = pd.read_csv('cooked data\\_squajins.csv')['0'].values,
+    if source is None:
+        source = 'cooked data\\'
+
+    if num_cols is None:
+        num_cols = ['Qж ТМ, м3/сут', 'Qн, т/сут', 'Qн ТМ, т/сут',
+                    'ГФ, м3/т', 'ГФ ТМ, м3/т', 'Обв ХАЛ, %', 'Нд, м',
+                    'Рзатр, атм', 'Dшт, мм', 'КВЧ', 'I, А', 'F, Гц',
+                    'Рприем, атм', 'Мехпримеси (ХАЛ), мг/дм3']
+    cols = num_cols.copy()
+    for c in ['Тип Аварии', 'Дата', 'Состояние']:
+        cols.append(c)
+
+    big_df = pd.DataFrame()
+    
+    for path in all_paths:
+        small_data = pd.read_csv(source + path + '.csv')[cols]
+
+        if specific_break is not None:
+            for i in small_data.index:
+                if small_data.loc[i]['Тип Аварии'] != specific_break and small_data.loc[i]['Тип Аварии'] != 0:
+                    small_data.loc[i, 'Тип Аварии'] = 0
+
+        # Удаление строк, где Nan больше чем в 10 колонках
+        # Идём с конца в начало
+        i = len(small_data) - 1
+        counter = 0
+        last_break = 0
+        while i >= 1:
+            if small_data.loc[i]['Тип Аварии'] != 0:
+                counter = days_before
+                last_break = small_data.loc[i]['Тип Аварии']
+            else:
+                if counter > 0:
+                    small_data.loc[i, 'Тип Аварии'] = last_break
+                    counter -= 1
+            # Пока количество пропусков больше 10 Смещаем аварию и удаляем строку
+            if (sum(small_data.loc[i].drop(['Дата', 'Тип Аварии', 'Состояние']).isna()) > 10 or 
+                small_data.loc[i]['Состояние'] != 'раб.' or 'ТР' in small_data.loc[i]['Дата']):
+                if small_data.loc[i - 1]['Тип Аварии'] == 0:
+                    small_data.loc[i - 1, 'Тип Аварии'] = small_data.loc[i, 'Тип Аварии']
+                small_data = small_data.drop(i)
+            i -= 1
+        if (sum(small_data.loc[i].drop(['Дата', 'Тип Аварии', 'Состояние']).isna()) > 10 or 
+            small_data.loc[i]['Состояние'] != 'раб.' or 'ТР' in small_data.loc[i]['Дата']):
+            small_data = small_data.drop(i)
+
+        # поставить дату в качестве интекса
+        small_data['Дата'] = pd.DatetimeIndex(small_data['Дата'])
+        small_data = small_data.set_index('Дата')
+
+        # удалить состояние (там только раб.)
+        new = small_data.drop('Состояние', axis=1)
+
+        # удалить повторяющиеся (на стыке файлов) записи
+        new = new[~new.index.duplicated(keep='first')]
+
+        if quantiles is not None:
+            # избавиться от выбросов (только в не аварийных случаях)
+            for col in num_cols:
+                q_low = new[col].quantile(quantiles)
+                q_hi = new[col].quantile(1-quantiles)
+                for index in new[col].index:
+                    if (new[col][index] > q_hi) or (new[col][index] < q_low):
+                        if new['Тип Аварии'][index] == 0:
+                            new[col] = new[col].drop(index)
+
+        # заполнить пропуски
+        try:
+            new = new.interpolate(method='time', limit_direction='both')
+        except:
+            # Все значения пропущены
+            pass
+
+        # На всякий случай записываем в другие файлы, чтобы не парсить xcel ещё раз
+        if save is not None:
+            new.to_csv(save + path + '.csv')
+        
+        new['Скважина'] = path
+        
+        big_df = big_df.append(new)
+
+    return big_df
+
+def pre_process_normal(all_paths=None, save=None, source=None, num_cols=None, quantiles=None, filter_method="", window=7):
+    if all_paths is None:
+        all_paths = pd.read_csv('cooked data\\_squajins.csv')['0'].values,
+    if source is None:
+        source = 'cooked data\\'
+    if num_cols is None:
+        num_cols = ['Qж ТМ, м3/сут', 'Qн, т/сут', 'Qн ТМ, т/сут',
+                    'ГФ, м3/т', 'ГФ ТМ, м3/т', 'Обв ХАЛ, %', 'Нд, м',
+                    'Рзатр, атм', 'Dшт, мм', 'КВЧ', 'I, А', 'F, Гц',
+                    'Рприем, атм', 'Мехпримеси (ХАЛ), мг/дм3']
+        
+    cols = num_cols.copy()
+    for c in ['Тип Аварии', 'Дата', 'Состояние']:
+        cols.append(c)
+
+    big_df = pd.DataFrame()
+    break_data = pd.DataFrame()
+    
+    for path in all_paths:
+        print(path)
+        small_data = pd.read_csv(source + path + '.csv')[cols]
+        small_data['Скважина'] = path
+
+        # Удаление строк, где Nan больше чем в 10 колонках
+        # Идём с конца в начало
+        i = len(small_data) - 1
+        while i >= 1:
+            if (sum(small_data.loc[i].drop(['Дата', 'Тип Аварии', 'Состояние']).isna()) > 10 or
+                    small_data.loc[i]['Состояние'] != 'раб.' or 'ТР' in small_data.loc[i]['Дата']):
+                if small_data.loc[i - 1]['Тип Аварии'] == 0:
+                    small_data.loc[i - 1, 'Тип Аварии'] = small_data.loc[i, 'Тип Аварии']
+                small_data = small_data.drop(i)
+            i -= 1
+
+        if (sum(small_data.loc[i].drop(['Дата', 'Тип Аварии', 'Состояние']).isna()) > 10 or
+            small_data.loc[i]['Состояние'] != 'раб.' or 'ТР' in small_data.loc[i]['Дата']):
+            small_data = small_data.drop(i)
+            
+        # поставить дату в качестве интекса
+        small_data['Дата'] = pd.DatetimeIndex(small_data['Дата'])
+        small_data = small_data.set_index('Дата')  
+        
+        # удалить состояние (там только раб.)
+        small_data = small_data.drop('Состояние', axis=1)
+
+        # удалить повторяющиеся (на стыке файлов) записи
+        small_data = small_data[~small_data.index.duplicated(keep='first')]
+        
+        # заполнить пропуски
+        try:
+            small_data = small_data.interpolate(method='time', limit_direction='both')
+        except:
+            # Все значения пропущены
+            pass
+        
+        if quantiles is not None:
+            # избавиться от выбросов (только в не аварийных случаях)
+            for col in num_cols:
+                q_low = small_data[col].quantile(quantiles)
+                q_hi = small_data[col].quantile(1-quantiles)
+                for index in small_data[col].index:
+                    if (small_data[col][index] > q_hi) or (small_data[col][index] < q_low):
+                        small_data[col] = small_data[col].drop(index)
+                   
+        small_data = small_data.dropna()
+        small_data = small_data.reset_index()
+
+        i = len(small_data) - 1
+        while i >= window:
+            valid = True
+            same_count = 0
+            for j in range(i - (window - 1), i):
+                if small_data.loc[j + 1]['Дата'] - small_data.loc[j]['Дата'] != datetime.timedelta(days=1):
+                    valid = False
+
+                if filter_method == 'delete':
+                    for col in num_cols:
+                        if small_data.loc[j, col] == small_data.loc[j+1, col]:
+                            same_count += 1
+
+            if filter_method == 'delete':
+                if same_count > (window-1) * len(num_cols) / 2:
+                    valid = False
+
+            if valid:
+                for j in range(i - (window - 1), i+1):
+                    if small_data.loc[i]['Тип Аварии'] != 0:
+                        break_data = break_data.append(small_data.loc[j])
+                    else:
+                        big_df = big_df.append(small_data.loc[j])
+            i -= 1
+
+        # На всякий случай записываем в другие файлы, чтобы не парсить xcel ещё раз
+        if save is not None:
+            small_data.to_csv(save + path + '.csv')
+
+    return big_df, break_data
+
+def pre_process_only_bad(all_paths=None, save=None, source=None, num_cols=None, quantiles=None, filter_method="", window=7):
+    if all_paths is None:
+        all_paths = pd.read_csv('cooked data\\_squajins.csv')['0'].values,
+    if source is None:
+        source = 'cooked data\\'
+    if num_cols is None:
+        num_cols = ['Qж ТМ, м3/сут', 'Qн, т/сут', 'Qн ТМ, т/сут',
+                    'ГФ, м3/т', 'ГФ ТМ, м3/т', 'Обв ХАЛ, %', 'Нд, м',
+                    'Рзатр, атм', 'Dшт, мм', 'КВЧ', 'I, А', 'F, Гц',
+                    'Рприем, атм', 'Мехпримеси (ХАЛ), мг/дм3']
+        
+    cols = num_cols.copy()
+    for c in ['Тип Аварии', 'Дата', 'Состояние']:
+        cols.append(c)
+
+    big_df = pd.DataFrame()
+    break_data = pd.DataFrame()
+    
+    for path in all_paths:
+        print(path)
+        small_data = pd.read_csv(source + path + '.csv')[cols]
+        small_data['Скважина'] = path
+
+        # Удаление строк, где Nan больше чем в 10 колонках
+        # Идём с конца в начало
+        i = len(small_data) - 1
+        while i >= 1:
+            if (sum(small_data.loc[i].drop(['Дата', 'Тип Аварии', 'Состояние']).isna()) > 10 or
+                    small_data.loc[i]['Состояние'] != 'раб.' or 'ТР' in small_data.loc[i]['Дата']):
+                if small_data.loc[i - 1]['Тип Аварии'] == 0:
+                    small_data.loc[i - 1, 'Тип Аварии'] = small_data.loc[i, 'Тип Аварии']
+                small_data = small_data.drop(i)
+            i -= 1
+
+        if (sum(small_data.loc[i].drop(['Дата', 'Тип Аварии', 'Состояние']).isna()) > 10 or
+            small_data.loc[i]['Состояние'] != 'раб.' or 'ТР' in small_data.loc[i]['Дата']):
+            small_data = small_data.drop(i)
+            
+        # поставить дату в качестве интекса
+        small_data['Дата'] = pd.DatetimeIndex(small_data['Дата'])
+        small_data = small_data.set_index('Дата')  
+        
+        # удалить состояние (там только раб.)
+        small_data = small_data.drop('Состояние', axis=1)
+
+        # удалить повторяющиеся (на стыке файлов) записи
+        small_data = small_data[~small_data.index.duplicated(keep='first')]
+        
+        # заполнить пропуски
+        try:
+            small_data = small_data.interpolate(method='time', limit_direction='both')
+        except:
+            # Все значения пропущены
+            pass
+        
+        if quantiles is not None:
+            # избавиться от выбросов (только в не аварийных случаях)
+            for col in num_cols:
+                q_low = small_data[col].quantile(quantiles)
+                q_hi = small_data[col].quantile(1-quantiles)
+                for index in small_data[col].index:
+                    if (small_data[col][index] > q_hi) or (small_data[col][index] < q_low):
+                        small_data[col] = small_data[col].drop(index)
+                   
+        small_data = small_data.dropna()
+        small_data = small_data.reset_index()
+
+        i = len(small_data) - 1
+        while i >= window:
+            if small_data.iloc[i]['Тип Аварии'] == 0:
+                i -= 1
+                continue
+            valid = True
+            same_count = 0
+            for j in range(i - (window - 1), i):
+                if small_data.loc[j + 1]['Дата'] - small_data.loc[j]['Дата'] != datetime.timedelta(days=1):
+                    valid = False
+
+                if filter_method == 'delete':
+                    for col in num_cols:
+                        if small_data.loc[j, col] == small_data.loc[j+1, col]:
+                            same_count += 1
+
+            if filter_method == 'delete':
+                if same_count > (window-1) * len(num_cols) / 2:
+                    valid = False
+
+            if valid:
+                for j in range(i - (window - 1), i+1):
+                    break_data = break_data.append(small_data.loc[j])
+
+            i -= 1
+
+        # На всякий случай записываем в другие файлы, чтобы не парсить xcel ещё раз
+        if save is not None:
+            small_data.to_csv(save + path + '.csv')
+
+    return break_data
+
+
+def clusterize(good_data, n_clusters=5):
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+    for col in good_data:
+        if 'Состояние' in col:
+            good_data[col] = good_data[col].fillna(0)
+
+    good_data = good_data.dropna()
+
+    pca = PCA(n_components=3)
+    #pca.fit(good_data.drop(['Дата', 'Тип Аварии'], axis=1))
+
+    scaled = StandardScaler().fit_transform(good_data)
+    principalComponents = pca.fit_transform(scaled)
+    principalDf = pd.DataFrame(data=principalComponents)
+
+    from sklearn.cluster import Birch
+
+    clustering = Birch(n_clusters=n_clusters).fit(principalDf)
+    good_data['cluster'] = clustering.labels_
+
+    return good_data
+
