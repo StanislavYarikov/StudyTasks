@@ -1,0 +1,45 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+data_file_columns = {'Свита': 'age', 'По стволу (MD), м': 'MD', 'По вертикали (TVD), м': 'TVD',
+       'от уровня моря (TVDSS), м': 'TVDSS', 'Механическая скорость,  м/час': 'ROP',
+       'Нагрузка на долото, т': 'weight', 'Обороты ротора, об/мин': 'RPM',
+       'Давление в манифольде, атм': 'man_p', 'Расход бур.насосов, л/сек': 'flow_in',
+       'Динамическое забойное давление, кгс/см2': 'din_P',
+       'Плотность с учётом взвешенных частиц шлама, г/см3': 'rho',
+       'ДНС на выходе из стстемы очистки (τ), API': 'DNS',
+       'Средняя плотность пород в интервале, г/см³': 'rho_rock',
+       'Пластовое давление по ГТН, кгс/см2': 'plast_P', 'Давление ГРП, кгс/см2': 'HF_P',
+       'Газопоказания (среднее интервала), %': 'gas', 'Диаметр долота, мм': 'D_bit',
+       'Площадь кольцевого сечения (ОК/Бурильная колона), м2': 'D_ring',
+       'Общие потери давления': 'loss_P', 'ЭЦП': 'ECD'}
+
+norm_feats_list = ['ROP', 'weight', 'RPM', 'man_p', 'flow_in', 'din_P', 'DNS', 'rho_rock', 
+                   'HF_P', 'plast_P', 'gas', 'D_bit', 'D_ring', 'loss_P', 'ECD']
+
+
+def read_file_drilling_data():
+    multisheets_df = pd.ExcelFile('Сводная таблица по скважинам_cut2.xlsx')
+    skv_names = multisheets_df.sheet_names
+    data_from_file = pd.DataFrame()
+    data_from_file_norm = pd.DataFrame()
+    for i in skv_names:
+        onesheet_df = pd.read_excel(multisheets_df, sheet_name=i, names=data_file_columns.values())
+        onesheet_df['skv_id'] = i
+        
+        onesheet_df = onesheet_df.interpolate(method='linear', axis=0)
+        data_from_file = data_from_file.append(onesheet_df)
+        
+        print(len(onesheet_df), len(data_from_file))
+    
+    from sklearn.preprocessing import StandardScaler
+    data_from_file_norm = data_from_file.copy()
+#    for i in norm_feats_list:
+#        scaler = StandardScaler()
+#        scaler.fit(data_from_file_norm[i])
+#        data_from_file_norm[i] = scaler.transform(data_from_file_norm[i])
+    
+    
+    return skv_names, data_from_file.reset_index(drop=True), data_from_file_norm.reset_index(drop=True)

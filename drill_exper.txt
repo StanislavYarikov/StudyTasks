@@ -1,0 +1,99 @@
+%run _functions.ipynb
+skv_names, data_from_file, data_from_file_norm = read_file_drilling_data()
+
+#--------------------------------------------------------------------------
+
+n_back = 4
+n_foward = 3
+back_feats = ['ROP', 'weight', 'RPM', 'man_p', 'flow_in',
+       'din_P', 'DNS', 'plast_P', 'HF_P', 'D_bit',
+       'D_ring', 'inclin']
+forward_feats = ['D_bit', 'D_ring', 'RPM', 'flow_in']
+target_feat = 'rho'
+
+dinamo_df = pd.DataFrame()
+for i_skv in skv_names:
+    one_df = modified_data.loc[data_from_file.skv_id == i_skv]
+    for feat in back_feats:
+        for n in range(1, n_back+1):
+            back_name = feat+'_back_'+str(n)
+            one_df[back_name] = one_df[feat].shift(n)
+    for feat in forward_feats:
+        fwd_name = feat+'_fwd_'+str(n_foward)
+        one_df[fwd_name] = one_df[feat].shift(-n_foward)
+        
+    one_df[target_feat+'_target'] = one_df[target_feat].shift(-n_foward)
+    target_list = [target_feat+'_target']
+    
+    dinamo_df = dinamo_df.append(one_df)
+    
+predictors_list = back_feats.copy()
+for feat in back_feats:
+    for n in range(1, n_back+1):
+        back_name = feat+'_back_'+str(n)
+        predictors_list = predictors_list+[back_name]
+for feat in forward_feats:
+    fwd_name = feat+'_fwd_'+str(n_foward)
+    predictors_list = predictors_list+[fwd_name]
+    
+print('<<<<<<<<данные собраны>>>>>>>>')
+
+#--------------------------------------------------------------------------
+
+test_skv = 'скв03'
+print(len(predictors_list), len(target_list))
+train_df = dinamo_df[dinamo_df['skv_id'] != test_skv][predictors_list+target_list].dropna()
+test_df = dinamo_df[dinamo_df['skv_id'] == test_skv][predictors_list+target_list].dropna()
+print((train_df.shape), (test_df.shape))
+train_X = train_df[predictors_list]
+train_y = train_df[target_list]
+test_X = test_df[predictors_list]
+test_y = test_df[target_list]
+print(train_X.shape, train_y.shape, test_X.shape, test_y.shape)
+
+from sklearn.ensemble import RandomForestRegressor
+reg = RandomForestRegressor()
+reg.fit(train_X, train_y)
+reg.predict(test_X)
+#коэффициет детерминации
+print(reg.score(train_X, train_y))
+print(reg.score(test_X, test_y))
+
+print('------ этап 1 --------')
+results_df = dinamo_df.copy()
+results_df.loc[train_X.index, 'rho_pred'] = pd.Series(reg.predict(train_X), index=train_X.index)
+results_df.loc[train_X.index, 'work_diff'] = results_df['rho_target'] - results_df['rho_pred']
+
+results_df.loc[test_X.index, 'rho_pred'] = pd.Series(reg.predict(test_X), index=test_X.index)
+
+# этап 2
+print('------ этап 2 --------')
+train_df_2 = results_df[results_df['skv_id'] != test_skv][predictors_list+['work_diff']].dropna()
+print((train_df.shape))
+train_y_2 = train_df_2[['work_diff']]
+print(train_X.shape, train_y_2.shape)
+
+reg2 = RandomForestRegressor()
+reg2.fit(train_X, train_y_2)
+reg2.score(train_X, train_y_2)
+
+results_df_2 = results_df.copy()
+results_df_2.loc[train_X.index, 'diff_pred'] = pd.Series(reg2.predict(train_X), index=train_X.index)
+
+results_df_2.loc[test_X.index, 'diff_pred'] = pd.Series(reg2.predict(test_X), index=test_X.index)
+
+print('---завершено---')
+plot_df = results_df_2.loc[results_df_2.skv_id == test_skv]
+plot_df.rho_target.plot()
+plot_df.rho_pred.plot()
+(plot_df.rho_pred+plot_df.diff_pred*plot_df.rho_pred).plot()
+
+plt.legend()
+plt.show()
+
+plot_df.diff_pred.plot()
+plt.show()
+
+plot_df.plast_P.plot()
+plot_df.HF_P.plot()
+plt.show()
